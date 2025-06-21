@@ -1,0 +1,14 @@
+{% extends "base_view.html" %}
+
+{% block title %}{{ filename }}{% endblock %}
+
+{% block headerstuff %}
+<style>
+img {
+margin: 0 auto;
+display: flex;
+}
+</style>
+{% endblock %}
+
+{% block body %}<img src='{{ url }}' />{% endblock %}

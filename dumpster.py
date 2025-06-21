@@ -15,16 +15,119 @@ from lib.flags import Flags
 from lib.inotify import INotify, INotifyWatch
 
 # external 3rd party imports
+import asyncio
+import aiofiles
+from aiohttp import web
+import jinja2
+from jinja2 import Environment, PackageLoader, select_autoescape
 
 
+base_path = "./testing"
+
+# convert to fully expanded path
+base_path = os.path.abspath(base_path)
+
+class AppServer(object):
+
+    image_types = ["jpg", "jpeg", "png", "gif", "webp", "tiff"]
+    text_types = ["txt", "md", "c", "cpp", "py", "rkt", "lisp", "rs"]
+    movie_types = ["webm", "mp4"]
+
+    def __init__(self, base_path):
+        self.jinja = Environment(
+            loader=PackageLoader("dumpster"),
+            autoescape=select_autoescape(),
+        )
+        self.base_path = base_path
+        return
+
+    def file_exists(self, path_to_check):
+        p = os.path.join(self.base_path, path_to_check)
+        return os.path.isfile(p)
+
+
+    def get_template_for(self, res):
+        # determine template for the resource type
+        # return None if no match found for the extension type
+        ext = res.strip().split(".")[-1].lower()
+        if ext in self.__class__.text_types:
+            return self.jinja.get_template("text_view.html"), True
+        if ext in self.__class__.image_types:
+            return self.jinja.get_template("img_view.html"), False
+        if ext in self.__class__.movie_types:
+            return self.jinja.get_template("movie_view.html"), False
+        return None, False
+            
+    async def not_found(self, request):
+        return web.Response(text="404 File Not Found")
+
+    async def index_handler(self, request):
+        # dispatch an index call for a certain folder
+        # if a NOINDEX file exists at all, do NOT provide an index
+        return web.Response(text="Hello world!!\n")
+    
+    async def resource_handler(self, request):
+        res = request.match_info.get('resource', '')
+        res_path = os.path.join(self.base_path, res)
+        if self.file_exists(res_path):
+            # compression? gzip?
+            f = web.FileResponse(path=res_path)
+            f.enable_compression()
+            return f
+        return self.not_found()
+
+    async def view_handler(self, request):
+        """
+        Accept a request for a resource
+        Yield a valid response if the resource exists
+        Yield 404 otherwise
+        """
+        res = request.match_info.get('resource', '')
+        res_url = os.path.join('/res/', res)
+        print(f"Requested resource: {res}")
+        print(f"Resolved url: {res_url}")
+
+        if not self.file_exists(res):
+            return self.not_found()
+        
+        tmpl, is_text = self.get_template_for(res)
+        if not tmpl:
+            return self.not_found()
+
+        text = "404 File Not Found"
+        if is_text:
+            # load the text (aiofiles needed???)
+            text_path = os.path.join(self.base_path, res)
+            async with aiofiles.open(text_path, 'r') as fi:
+                loaded_txt = await fi.read()
+            text = tmpl.render(filename=res, text=loaded_txt)
+        else:
+            text = tmpl.render(filename=res, url=res_url)
+        return web.Response(content_type='text/html', text=text)
+    pass
+
+
+def main2():
+    "Second iteration of main2() for aiohttp now"
+    app = web.Application()
+    dumpster = AppServer(base_path)
+
+    #app['chuck'] = "I can chuck what I want in here????"
+    #app.on_startup.append(test_startup)
+
+    # bind the routes to the app service
+    app.router.add_get('/index/{dir}', dumpster.index_handler)
+    app.router.add_get('/res/{resource:.*}', dumpster.resource_handler)
+    app.router.add_get('/view/{resource:.*}', dumpster.view_handler)
+
+    web.run_app(app, host='0.0.0.0', port=8811)
+    pass
 
 def main():
+    "Old code to port to an asyncio system"
+
     wd_data = {} # WD => INotifyWatch
     paths_hooked = {} # String => WD
-    base_path = "./testing"
-
-    # convert to fully expanded path
-    base_path = os.path.abspath(base_path)
     
     # watch flags for the base directory and all subfolders
     wm = Flags.sum(Flags.IN_CREATE, Flags.IN_DELETE,
@@ -141,6 +244,6 @@ def main():
         pass
     return
 
-main() if __name__ == "__main__" else None
+main2() if __name__ == "__main__" else None
 
 # end dumpster.py 
