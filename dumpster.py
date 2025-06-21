@@ -27,11 +27,15 @@ base_path = "./testing"
 # convert to fully expanded path
 base_path = os.path.abspath(base_path)
 
-class AppServer(object):
+class AppServer:
 
+    # extensions supported (for now)
     image_types = ["jpg", "jpeg", "png", "gif", "webp", "tiff"]
     text_types = ["txt", "md", "c", "cpp", "py", "rkt", "lisp", "rs"]
     movie_types = ["webm", "mp4"]
+
+    # files used to present files
+    templates = ["index", "text_view", "img_view", "movie_view"]
 
     def __init__(self, base_path):
         self.jinja = Environment(
@@ -39,42 +43,39 @@ class AppServer(object):
             autoescape=select_autoescape(),
         )
         self.base_path = base_path
+        self.tmpls = {t: self.jinja.get_template(f"{t}.html") for t in self.templates}
+        self.not_found = web.Response(text="404 File Not Found")
         return
 
-    def file_exists(self, path_to_check):
+    def get_typeof(self, path_to_check):
         p = os.path.join(self.base_path, path_to_check)
-        return os.path.isfile(p)
-
+        if os.path.isdir(p):
+            return 'DIR'
+        if os.path.isfile(p):
+            return 'FI'
+        return None 
 
     def get_template_for(self, res):
         # determine template for the resource type
         # return None if no match found for the extension type
         ext = res.strip().split(".")[-1].lower()
-        if ext in self.__class__.text_types:
-            return self.jinja.get_template("text_view.html"), True
-        if ext in self.__class__.image_types:
-            return self.jinja.get_template("img_view.html"), False
-        if ext in self.__class__.movie_types:
-            return self.jinja.get_template("movie_view.html"), False
+        if ext in self.text_types:
+            return self.tmpls.get("text_view", None), True
+        if ext in self.image_types:
+            return self.tmpls.get("img_view", None), False
+        if ext in self.movie_types:
+            return self.tmpls.get("movie_view", None), False
         return None, False
             
-    async def not_found(self, request):
-        return web.Response(text="404 File Not Found")
-
-    async def index_handler(self, request):
-        # dispatch an index call for a certain folder
-        # if a NOINDEX file exists at all, do NOT provide an index
-        return web.Response(text="Hello world!!\n")
-    
     async def resource_handler(self, request):
         res = request.match_info.get('resource', '')
         res_path = os.path.join(self.base_path, res)
-        if self.file_exists(res_path):
-            # compression? gzip?
+        typeof = self.get_typeof(res_path)
+        if typeof == 'FI':
             f = web.FileResponse(path=res_path)
-            f.enable_compression()
+            f.enable_compression() # turn on compression (req dictates)
             return f
-        return self.not_found()
+        return self.not_found
 
     async def view_handler(self, request):
         """
@@ -84,15 +85,44 @@ class AppServer(object):
         """
         res = request.match_info.get('resource', '')
         res_url = os.path.join('/res/', res)
+        res_path = os.path.join(self.base_path, res)
         print(f"Requested resource: {res}")
         print(f"Resolved url: {res_url}")
+        print(f"Target res path: {res_path}")
 
-        if not self.file_exists(res):
-            return self.not_found()
-        
+        typeof = self.get_typeof(res)
+        if not typeof:
+            return self.not_found
+
+        if typeof == 'DIR':
+            # generate an index of this Dir if allowed
+            # if not, bail out and 404!!!
+            raw_files = os.listdir(res_path)
+            if 'NOINDEX' in raw_files:
+                return self.not_found
+
+            subfolders = [
+                {'name': f, 'url': os.path.join("/view", res, f)}
+                 for f in raw_files if os.path.isdir(os.path.join(res_path, f))
+            ]
+            files = [
+                {'name': f, 'url': os.path.join("/view", res, f)}
+                for f in raw_files if os.path.isfile(os.path.join(res_path, f))
+            ]
+            
+            tmpl = self.tmpls.get("index", None)
+            if not tmpl:
+                print("Why are we here?")
+                return self.not_found
+
+            if res.strip() == "":
+                res = "/"
+            text = tmpl.render(directory=res, files=files, folders=subfolders)
+            return web.Response(content_type="text/html", text=text)
+
         tmpl, is_text = self.get_template_for(res)
         if not tmpl:
-            return self.not_found()
+            return self.not_found
 
         text = "404 File Not Found"
         if is_text:
@@ -116,7 +146,6 @@ def main2():
     #app.on_startup.append(test_startup)
 
     # bind the routes to the app service
-    app.router.add_get('/index/{dir}', dumpster.index_handler)
     app.router.add_get('/res/{resource:.*}', dumpster.resource_handler)
     app.router.add_get('/view/{resource:.*}', dumpster.view_handler)
 

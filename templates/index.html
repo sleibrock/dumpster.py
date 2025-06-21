@@ -1,0 +1,25 @@
+{% extends "base_view.html" %}
+
+
+{% block title %}Index of {{ directory }}{% endblock %}
+
+{% block body %}
+<h1>Index of {{ directory }}</h1>
+
+{% if folders %}
+<h2>Folders</h2>
+{% for f in folders %}
+<li><a href="{{f.url}}">{{f.name}}</a></li>
+{% endfor %}
+</ul>
+{% endif %}
+
+{% if files %}
+<h2>Files</h2>
+<ul>
+{% for f in files %}
+<li><a href="{{f.url}}">{{f.name}}</a></li>
+{% endfor %}
+</ul>
+{% endif %}
+{% endblock %}
