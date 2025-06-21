@@ -6,12 +6,9 @@ dumpster.py - entry point program
 """
 
 import os
-import ctypes
-from ctypes import (
-    c_int, c_char_p, c_uint32, c_size_t, c_ssize_t, c_void_p
-)
 import struct
-import select
+from ctypes import create_string_buffer
+from select import poll as Poller, POLLIN as sel_POLLIN
 
 # local project imports
 from lib.flags import Flags
@@ -22,8 +19,8 @@ from lib.inotify import INotify, INotifyWatch
 
 
 def main():
-    watch_paths = {}
-    wds_paths = {}
+    wd_data = {} # WD => INotifyWatch
+    paths_hooked = {} # String => WD
     base_path = "./testing"
 
     # convert to fully expanded path
@@ -36,26 +33,27 @@ def main():
     evt_size = struct.calcsize('iIII')
     try:
         with INotify(mask=Flags.IN_NONBLOCK()) as inoty:
-            watch_paths[base_path] = INotifyWatch(inoty, base_path.encode('utf-8'), wm)
+            base_watch = INotifyWatch(inoty, base_path, wm)
+            wd_data[base_watch.fd] = base_watch
+            paths_hooked[base_path] = base_watch.fd 
 
             # do a directory walk and add subdirectories to the watch paths as well
-            # todo: learn os path walking again
             print("Walking")
             for (root, dirs, fis) in os.walk(base_path, topdown=True):
                 for d in dirs:
                     np = str(os.path.join(root, d))
-                    if np not in watch_paths:
+                    if np not in paths_hooked:
                         print(f"Adding '{np}' to watch_paths")
-                        watch_paths[np] = INotifyWatch(inoty, np.encode('utf-8'), wm)
+                        new_watch = INotifyWatch(inoty, np, wm)
+                        wd_data[new_watch.fd] = new_watch
+                        paths_hooked[np] = new_watch.fd 
             
             loop = True
-            poller = select.poll()
-            poller.register(inoty.fd, select.POLLIN)
-            buf = ctypes.create_string_buffer(4096)
-            
+            poller = Poller()
+            poller.register(inoty.fd, sel_POLLIN)
+            buf = create_string_buffer(4096)
             while loop:
                 evts = poller.poll(1000)
-                
                 if not evts:
                     continue
                 
@@ -70,14 +68,22 @@ def main():
                     oe_size = offset + evt_size
                     evt_header = buf.raw[offset : oe_size]
                     wd_evt, mask, cookie, l = struct.unpack('iIII', evt_header)
-                    
+                    # wd_evt is the WD identifier for the file path?
+
+                    print("File event happened in:")
+                    evt_basepath = wd_data[wd_evt].path
+
+                    if wd_evt not in wd_data:
+                        print(f"{wd_evt} not in {list(wd_data.keys())}")
+                        raise Exception("Some illegal ass state just happened")
+
                     fname = ""
                     if l > 0:
                         oel_size = oe_size + l
                         name_bytes = buf.raw[oe_size:oel_size].split(b'\0', 1)[0]
                         fname = name_bytes.decode('utf-8', errors='ignore')
                         
-                    fp = os.path.join(base_path, fname) if fname else base_path
+                    fp = os.path.join(evt_basepath, fname) if fname else evt_basepath
                         
                     evt_names = Flags.get_event_names(mask)
                     is_dir = bool(Flags.IN_ISDIR() & mask)
@@ -90,23 +96,46 @@ def main():
                     if 'IN_CREATE' in evt_names or 'IN_MOVED_TO' in evt_names:
                         if is_dir:
                             print(f"New directory '{fp}'")
+                            np = os.path.join(fp)
+                            nwd = INotifyWatch(inoty, fp, wm)
+                            wd_data[nwd.fd] = nwd
+                            paths_hooked[fp] = nwd.fd
+
+                            print("Walking new directory (inotify won't do this)")
+                            for (root, dirs, fis) in os.walk(fp, topdown=True):
+                                for d in dirs:
+                                    np = str(os.path.join(root, d))
+                                    if np not in paths_hooked:
+                                        print(f"Adding '{np}' to watch_paths")
+                                        new_watch = INotifyWatch(inoty, np, wm)
+                                        wd_data[new_watch.fd] = new_watch
+                                        paths_hooked[np] = new_watch.fd 
                         else:
                             print(f"New file '{fp}'")
                     elif 'IN_DELETE' in evt_names or 'IN_MOVED_FROM' in evt_names:
-                        print("Removing thing")
+                        # a file or dir in WD got removed
+                        # check if the file was tracked and close the separate WD if so
                         if is_dir:
-                            print(f"Directory '{fp}' removed")
+                            if fp in paths_hooked:
+                                # close the WD and remove the path entry
+                                print(f"{fp} is being watched, removing it")
+                                target_wd = paths_hooked.get(fp)
+                                wd_data[target_wd].close()
+                                del paths_hooked[fp]
+                                del wd_data[target_wd]
+                            else:
+                                raise Exception("Illegal ass state again???")
                         else:
                             print(f"File '{fp}' removed")
                         
                     offset += evt_size + l
     except Exception as e:
-        print("*** {e}")
+        print(f"!!!*** {e} ***!!!")
     except KeyboardInterrupt as e:
         print("*** Received STOP message")
     finally:
         # release all known resources
-        for path, wd in watch_paths.items():
+        for path, wd in wd_data.items():
             wd.close()
         print(">>> Done with this")
         pass

@@ -146,20 +146,21 @@ class INotifyWatch(FileDescriptor):
     FD class for Watchers that monitor a single directory
     Each directory to watch will need it's own respective FD
     """
-    __slots__ = ["fd", "inoty"]
+    __slots__ = ["fd", "inoty", "path"]
     def __init__(self, inoty, path, mask):
-        fd = INotifyFFI.add_watch(inoty.fd, path, mask)
+        fd = INotifyFFI.add_watch(inoty.fd, path.encode('utf-8'), mask)
         if fd == -1:
             msg = self.error()
             raise Exception(msg)
 
         super().__init__(fd)
         self.inoty = inoty
+        self.path = path
         return
 
     def close(self):
         "Needs inotify_rm_watch() instead of close()"
-        print(f"Closing watcher {self.fd}")
+        print(f"*** Closing watcher {self.fd} ***")
         return INotifyFFI.rm_watch(self.inoty.fd, self.fd)
     pass
 
