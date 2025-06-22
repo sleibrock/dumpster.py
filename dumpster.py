@@ -10,6 +10,8 @@ import struct
 from ctypes import create_string_buffer
 from select import poll as Poller, POLLIN as sel_POLLIN
 
+from argparse import ArgumentParser
+
 # local project imports
 from lib.flags import Flags
 from lib.inotify import INotify, INotifyWatch
@@ -25,7 +27,6 @@ from jinja2 import Environment, PackageLoader, select_autoescape
 base_path = "./testing"
 
 # convert to fully expanded path
-base_path = os.path.abspath(base_path)
 
 class AppServer:
 
@@ -137,9 +138,27 @@ class AppServer:
     pass
 
 
+def collect_args():
+    "Collect args via ArgumentParser"
+    parser = ArgumentParser(
+        prog="dumpster.py",
+        description="Place to dump all your files and images",
+        epilog="Bottom text",
+    )
+    parser.add_argument('target_dir')
+    parser.add_argument('-p', '--port', type=int, default=8811)
+
+    return parser.parse_args()
+
+    
 def main2():
     "Second iteration of main2() for aiohttp now"
+    args = collect_args()
+    base_path = args.target_dir
     app = web.Application()
+
+    base_path = os.path.abspath(args.target_dir)
+    port = args.port
     dumpster = AppServer(base_path)
 
     #app['chuck'] = "I can chuck what I want in here????"
@@ -149,10 +168,12 @@ def main2():
     app.router.add_get('/res/{resource:.*}', dumpster.resource_handler)
     app.router.add_get('/view/{resource:.*}', dumpster.view_handler)
 
-    web.run_app(app, host='0.0.0.0', port=8811)
+    web.run_app(app, host='0.0.0.0', port=port)
     pass
 
+
 def main():
+    # TODO: port all this junk to an asyncio worker
     "Old code to port to an asyncio system"
 
     wd_data = {} # WD => INotifyWatch
@@ -200,14 +221,12 @@ def main():
                     oe_size = offset + evt_size
                     evt_header = buf.raw[offset : oe_size]
                     wd_evt, mask, cookie, l = struct.unpack('iIII', evt_header)
-                    # wd_evt is the WD identifier for the file path?
-
-                    print("File event happened in:")
-                    evt_basepath = wd_data[wd_evt].path
 
                     if wd_evt not in wd_data:
                         print(f"{wd_evt} not in {list(wd_data.keys())}")
                         raise Exception("Some illegal ass state just happened")
+                    print("File event happened in:")
+                    evt_basepath = wd_data[wd_evt].path
 
                     fname = ""
                     if l > 0:
